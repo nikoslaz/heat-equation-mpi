@@ -103,6 +103,27 @@ the process count. At 8 processes the run is likely also affected by more proces
 on the machine, and by halo-exchange overhead. Larger grids or a machine with more cores and memory
 bandwidth would be needed to see better scaling.
 
+### GPU (CUDA)
+
+Measured on a Tesla T4 (Google Colab, CUDA 13.0, compiled with `nvcc -O3 -arch=native`). The CUDA version
+gives the same `N = 256`, `K = 1000` average (**6.01949**). Time is the time-step loop only (CUDA events),
+without the copies to and from the GPU.
+
+| N | K | time (s) | effective bandwidth |
+|---|---|---|---|
+| 4096 | 200 | 0.240 | ~224 GB/s |
+| 8192 | 200 | 0.894 | ~240 GB/s |
+| 16384 | 100 | 1.773 | ~242 GB/s |
+
+Effective bandwidth counts one read and one write of 8 bytes per grid point per step
+(`2 * N^2 * 8 * K / time`). It assumes neighbouring values come from cache.
+
+For `N = 4096`, `K = 200` the GPU takes 0.240 s, against 1.367 s for 1 MPI process (**5.7x** faster) and 0.740 s
+for the best MPI run with 4 processes (**3.1x** faster). The T4's peak memory bandwidth is about 320 GB/s, so
+the simple kernel already reaches roughly 70–75% of it. That fits the stencil being limited by memory
+bandwidth, and it means further kernel tuning can give at most about another 1.3x. The CPU and GPU runs were
+on different machines (a Mac for MPI, Colab for CUDA), so the comparison is indicative.
+
 ## Possible next steps
 
 - Handle `N` not divisible by the number of processes.
