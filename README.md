@@ -1,6 +1,7 @@
-# Parallel 2D Heat Equation (C++ / MPI)
+# Parallel 2D Heat Equation (C++ / MPI / CUDA)
 
-A distributed-memory solver for the 2D heat equation on a square grid, written in C++17 with MPI.
+A solver for the 2D heat equation on a square grid, written in C++17, with a distributed-memory MPI
+version and a single-GPU CUDA version.
 The top edge is held at 100, the other three edges at 0, and the interior evolves with an explicit
 5-point stencil:
 
@@ -24,6 +25,18 @@ with `alpha = 0.2` (the explicit scheme is stable for `alpha <= 0.25`).
   process (`MPI_Reduce` with `MPI_MAX`, measured with `MPI_Wtime` after a barrier), and for small grids
   (`N <= 1024`) the full grid is collected with `MPI_Gather` and written to `grid.csv` for plotting.
 
+### CUDA version
+
+`heat_cuda.cu` runs the same scheme on one NVIDIA GPU:
+
+- The whole `N x N` grid lives in GPU memory as two flat `double` buffers (`u`, `uNew`), swapped by pointer after every step.
+- The kernel `heat_step` uses one thread per grid point in `32 x 8` thread blocks (32 threads along a row,
+  so neighbouring threads read neighbouring memory). Threads on the boundary do nothing, so the fixed edge
+  values are never overwritten.
+- The grid is copied to the GPU once at the start and back once at the end. The time step loop runs
+  entirely on the GPU and is timed with CUDA events.
+- The output is the same as the MPI version (`Average`, `Time`, and `grid.csv` for `N <= 1024`).
+
 ## Build and run
 
 Requirements: a C++17 compiler, CMake >= 3.16 and an MPI implementation (e.g. `brew install open-mpi`).
@@ -41,6 +54,20 @@ cmake --build build --target run
 
 `N` must be divisible by the number of processes.
 
+**CUDA.** If CMake finds a CUDA compiler (`nvcc`, from the CUDA Toolkit), it also builds `build/heat_cuda`;
+otherwise it is skipped and only the MPI version is built (e.g. on macOS, which has no CUDA support).
+
+```bash
+# usage: heat_cuda K N
+./build/heat_cuda 1000 256
+
+# or via the CMake target
+cmake --build build --target run_cuda
+```
+
+With CMake >= 3.24 the code is compiled for the GPU in the machine; to target another GPU pass
+e.g. `-DCMAKE_CUDA_ARCHITECTURES=80` when configuring.
+
 Plot the result (needs `numpy` and `matplotlib`):
 
 ```bash
@@ -57,7 +84,7 @@ Everything in one go (build, correctness checks, benchmark, writes `results.md`)
 
 The parallel version was checked against a single-process reference implementation:
 for `N = 256`, `K = 1000` the average temperature is **6.01949**, and the program prints the same value
-with 1, 2 and 4 processes.
+with 1, 2 and 4 processes. `run_all.sh` also checks the CUDA version against the same value when it is built.
 
 ## Performance
 
@@ -82,3 +109,5 @@ bandwidth would be needed to see better scaling.
 - Overlap communication and computation (non-blocking `MPI_Isend`/`MPI_Irecv` on the interior rows).
 - 2D domain decomposition to reduce the amount of data exchanged per process.
 - Add OpenMP inside each process (hybrid MPI + OpenMP).
+- Multi-GPU: one GPU per MPI rank, exchanging ghost rows between GPUs (CUDA-aware MPI).
+- Shared-memory tiling in the CUDA kernel, and a GPU-side reduction for the average.

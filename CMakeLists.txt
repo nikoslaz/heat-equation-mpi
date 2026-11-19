@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(heat2d CXX)
+project(heat2d LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -23,3 +23,24 @@ add_custom_target(run
   DEPENDS heat
   USES_TERMINAL
 )
+
+# Optional CUDA build: only when a CUDA compiler (nvcc) is found.
+include(CheckLanguage)
+check_language(CUDA)
+if(CMAKE_CUDA_COMPILER)
+  enable_language(CUDA)
+  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+    set(CMAKE_CUDA_ARCHITECTURES native)
+  endif()
+  add_executable(heat_cuda main.cpp heat_cuda.cu)
+  target_compile_definitions(heat_cuda PRIVATE HEAT_USE_CUDA)
+  target_compile_options(heat_cuda PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra>)
+
+  add_custom_target(run_cuda
+    COMMAND $<TARGET_FILE:heat_cuda> ${HEAT_K} ${HEAT_N}
+    DEPENDS heat_cuda
+    USES_TERMINAL
+  )
+else()
+  message(STATUS "No CUDA compiler found: building the MPI version only")
+endif()
