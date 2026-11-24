@@ -1,7 +1,7 @@
 # Parallel 2D Heat Equation (C++ / MPI / CUDA)
 
-A solver for the 2D heat equation on a square grid, written in C++17, with a distributed-memory MPI
-version and a single-GPU CUDA version.
+A solver for the 2D heat equation on a square grid, written in C++17, in three versions: distributed-memory
+MPI, a single GPU with CUDA, and MPI + CUDA across several GPUs.
 The top edge is held at 100, the other three edges at 0, and the interior evolves with an explicit
 5-point stencil:
 
@@ -11,7 +11,7 @@ u_new[i][j] = u[i][j] + alpha * (u[i-1][j] + u[i+1][j] + u[i][j-1] + u[i][j+1] -
 
 with `alpha = 0.2` (the explicit scheme is stable for `alpha <= 0.25`).
 
-![Temperature after 1000 steps on a 256x256 grid](heat.png)
+![Temperature after 1000 steps on a 256x256 grid](results/heat.png)
 
 ## How it works
 
@@ -23,19 +23,57 @@ with `alpha = 0.2` (the explicit scheme is stable for `alpha <= 0.25`).
 - **Double buffering.** Two grids (`u`, `uNew`) are swapped after every step.
 - **Results.** The average temperature is computed with `MPI_Reduce` (sum), the run time is the slowest
   process (`MPI_Reduce` with `MPI_MAX`, measured with `MPI_Wtime` after a barrier), and for small grids
-  (`N <= 1024`) the full grid is collected with `MPI_Gather` and written to `grid.csv` for plotting.
+  (`N <= 1024`) the full grid is collected with `MPI_Gather` and written to `grid.csv` in the directory the program is run from. Move it to `results/` for `scripts/plot.py`.
 
-### CUDA version
+### CUDA versions
 
-`heat_cuda.cu` runs the same scheme on one NVIDIA GPU:
+| file | what it is |
+|---|---|
+| `heat_gpu.cu`, `heat_gpu.hpp` | the CUDA kernels, behind a small C++ interface |
+| `heat_cuda.cpp` | single-GPU program (`heat_cuda`) |
+| `heat_mpi_cuda.cpp` | MPI + CUDA program (`heat_mpi_cuda`), one GPU per rank |
+| `heat_reference.hpp` | serial CPU version, used to check the GPU results point by point |
 
-- The whole `N x N` grid lives in GPU memory as two flat `double` buffers (`u`, `uNew`), swapped by pointer after every step.
-- The kernel `heat_step` uses one thread per grid point in `32 x 8` thread blocks (32 threads along a row,
-  so neighbouring threads read neighbouring memory). Threads on the boundary do nothing, so the fixed edge
-  values are never overwritten.
-- The grid is copied to the GPU once at the start and back once at the end. The time step loop runs
-  entirely on the GPU and is timed with CUDA events.
-- The output is the same as the MPI version (`Average`, `Time`, and `grid.csv` for `N <= 1024`).
+The kernels are in their own `.cu` file and the programs are plain C++, so the MPI code never goes through `nvcc`.
+
+**Single GPU (`heat_cuda`).** The whole grid lives in GPU memory as two buffers that swap after each step.
+The grid is copied to the GPU once and back once, and the time-step loop runs entirely on the GPU
+(timed with CUDA events, after one untimed warm-up step). There are three kernels (`--kernel`):
+
+- **naive**: one thread per grid point in `32 x 8` blocks; every value is loaded from global memory, and the
+  L1/L2 caches serve most of the repeated loads of neighbouring values.
+- **shared**: each block first copies its tile plus a one-point halo into shared memory, then reads the
+  neighbours from there. The point is to measure whether doing the caches' job by hand pays off.
+- **temporal** (temporal blocking): the stencil is limited by memory bandwidth, so the way to go faster is to
+  move less data. Each block loads a `32 x 64` tile into shared memory and advances it `S` steps there
+  (`--tsteps S`, 1–8) before writing back. After `s` steps only points at least `s` away from the tile edge are
+  still exact, so tiles overlap by `2S` and each block writes back its inner `(32-2S) x (64-2S)` points.
+  The grid crosses DRAM once per `S` steps instead of once per step, in exchange for some repeated arithmetic
+  in the overlaps.
+
+Every kernel runs in `double` or `float` (`--precision`); `float` moves half the bytes. The average is computed
+on the GPU with a two-level reduction (warp shuffles, then shared memory), so only one number per block is copied
+back. `--verify` reruns the problem on the CPU and reports the largest difference over the whole grid.
+
+**Several GPUs (`heat_mpi_cuda`).** Same row decomposition as the MPI version, but each rank keeps its strip and
+ghost rows on its own GPU (rank `r` on a node uses GPU `r % GPU count`). Each step:
+
+1. the interior rows, which don't need ghost rows, start computing on one CUDA stream;
+2. meanwhile, on a second stream, the two edge rows are copied to pinned host memory, exchanged with
+   `MPI_Sendrecv`, and copied back into the ghost rows;
+3. the two edge rows are then updated on the second stream.
+
+So the halo exchange is hidden behind the interior computation. `--no-overlap` does the steps one after another
+for comparison. `--cuda-aware` passes GPU pointers straight to MPI, without the host copies (needs an MPI built
+with CUDA support).
+
+## Project layout
+
+- `src/mpi/`: the MPI version (`main.cpp`, `heat_mpi.cpp`, `heat_mpi.hpp`)
+- `src/cuda/`: the CUDA versions (see below)
+- `scripts/`: `run_all.sh`, `test_cuda.sh`, `bench_cuda.sh` and `plot.py`
+- `results/`: the generated tables and plot (`results.md`, `results_cuda.md`, `heat.png`, `grid.csv`)
+- `colab/`: the Google Colab notebook and the script that generates it
 
 ## Build and run
 
@@ -54,37 +92,62 @@ cmake --build build --target run
 
 `N` must be divisible by the number of processes.
 
-**CUDA.** If CMake finds a CUDA compiler (`nvcc`, from the CUDA Toolkit), it also builds `build/heat_cuda`;
-otherwise it is skipped and only the MPI version is built (e.g. on macOS, which has no CUDA support).
+**CUDA.** If CMake (>= 3.18) finds a CUDA compiler (`nvcc`, from the CUDA Toolkit), it also builds
+`build/heat_cuda` and `build/heat_mpi_cuda`. Otherwise they are skipped and only the MPI version is built
+(e.g. on macOS, which has no CUDA support).
 
 ```bash
-# usage: heat_cuda K N
+# usage: heat_cuda K N [--kernel naive|shared|temporal] [--precision double|float] [--tsteps S] [--verify] [--no-csv]
 ./build/heat_cuda 1000 256
+./build/heat_cuda 1000 256 --kernel temporal --tsteps 4 --verify
 
-# or via the CMake target
+# usage: heat_mpi_cuda K N [--no-overlap] [--cuda-aware]
+mpirun -np 2 ./build/heat_mpi_cuda 1000 256
+
+# CUDA checks (every kernel and precision vs the CPU) and benchmarks (writes results/results_cuda.md)
+./scripts/test_cuda.sh
+./scripts/bench_cuda.sh
+
+# or via the CMake targets
 cmake --build build --target run_cuda
+cmake --build build --target run_mpi_cuda
 ```
 
 With CMake >= 3.24 the code is compiled for the GPU in the machine; to target another GPU pass
 e.g. `-DCMAKE_CUDA_ARCHITECTURES=80` when configuring.
 
+**Google Colab.** No NVIDIA GPU at hand? Upload [`colab/heat_cuda.ipynb`](colab/heat_cuda.ipynb) to
+[Colab](https://colab.research.google.com) (File → Upload notebook), choose a T4 GPU runtime and run all
+cells. It contains the source files, builds them, runs the checks and the benchmarks, and plots the result.
+After changing the code, regenerate it with `python3 colab/make_notebook.py`.
+
 Plot the result (needs `numpy` and `matplotlib`):
 
 ```bash
-python3 plot.py
+python3 scripts/plot.py
 ```
 
-Everything in one go (build, correctness checks, benchmark, writes `results.md`):
+Everything in one go (build, correctness checks, benchmark, writes `results/results.md`; on a machine with CUDA also
+runs `scripts/test_cuda.sh` and `scripts/bench_cuda.sh`):
 
 ```bash
-./run_all.sh
+./scripts/run_all.sh
 ```
 
 ## Validation
 
 The parallel version was checked against a single-process reference implementation:
 for `N = 256`, `K = 1000` the average temperature is **6.01949**, and the program prints the same value
-with 1, 2 and 4 processes. `run_all.sh` also checks the CUDA version against the same value when it is built.
+with 1, 2 and 4 processes.
+
+`scripts/test_cuda.sh` checks the CUDA versions:
+
+- `heat_cuda` with every kernel gives 6.01949 for `N = 256`, `K = 1000`;
+- every kernel, in double and float, matches the CPU at every grid point (`--verify`; tolerance `1e-9` for double,
+  `1e-2` for float). The grid sizes are not multiples of the tile sizes, and the step counts are not multiples of
+  `S`. One problem (`K = 5000`, `N = 150`) runs long enough for the heat to reach the whole grid; with few steps
+  most of the grid is still exactly 0, and a wrong value there would go unnoticed;
+- `heat_mpi_cuda` gives 6.01949 with 1, 2 and 4 ranks, with and without overlap.
 
 ## Performance
 
@@ -121,8 +184,10 @@ Effective bandwidth counts one read and one write of 8 bytes per grid point per 
 For `N = 4096`, `K = 200` the GPU takes 0.240 s, against 1.367 s for 1 MPI process (**5.7x** faster) and 0.740 s
 for the best MPI run with 4 processes (**3.1x** faster). The T4's peak memory bandwidth is about 320 GB/s, so
 the simple kernel already reaches roughly 70–75% of it. That fits the stencil being limited by memory
-bandwidth, and it means further kernel tuning can give at most about another 1.3x. The CPU and GPU runs were
-on different machines (a Mac for MPI, Colab for CUDA), so the comparison is indicative.
+bandwidth: a kernel that reads and writes the grid once per step can get at most about another 1.3x. Going
+further means moving fewer bytes per step, which is what the `float` and temporal-blocking versions do;
+`bench_cuda.sh` compares all of them. The CPU and GPU runs were on different machines (a Mac for MPI, Colab
+for CUDA), so the comparison is indicative.
 
 ## Possible next steps
 
@@ -130,5 +195,6 @@ on different machines (a Mac for MPI, Colab for CUDA), so the comparison is indi
 - Overlap communication and computation (non-blocking `MPI_Isend`/`MPI_Irecv` on the interior rows).
 - 2D domain decomposition to reduce the amount of data exchanged per process.
 - Add OpenMP inside each process (hybrid MPI + OpenMP).
-- Multi-GPU: one GPU per MPI rank, exchanging ghost rows between GPUs (CUDA-aware MPI).
-- Shared-memory tiling in the CUDA kernel, and a GPU-side reduction for the average.
+- Profile the CUDA kernels with Nsight Compute (the kernels are built with `-lineinfo` for this).
+- Use temporal blocking in the MPI + CUDA version too (needs `S` ghost rows per side, exchanged every `S` steps).
+- Run `heat_mpi_cuda` on a machine with several GPUs to measure real multi-GPU scaling.

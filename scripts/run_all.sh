@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Build, check correctness, and benchmark the MPI (and, if built, CUDA) heat solver.
-# Usage: ./run_all.sh            (defaults)
-#        BENCH_N=2048 BENCH_K=300 ./run_all.sh
+# Usage: ./scripts/run_all.sh            (defaults)
+#        BENCH_N=2048 BENCH_K=300 ./scripts/run_all.sh
 set -e
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 BENCH_N=${BENCH_N:-4096}
 BENCH_K=${BENCH_K:-200}
@@ -34,30 +34,25 @@ base=""
 {
 echo "| processes | time (s) | speedup | efficiency |"
 echo "|---|---|---|---|"
-} > results.md
+} > results/results.md
 for np in 1 2 4 8; do
     t=$(run $np "$BENCH_K" "$BENCH_N" | grep Time | awk '{print $3}')
     if [ -z "$base" ]; then base=$t; fi
     sp=$(awk -v b="$base" -v t="$t" 'BEGIN{printf "%.2f", b/t}')
     ef=$(awk -v s="$sp" -v n="$np" 'BEGIN{printf "%.0f%%", 100*s/n}')
     printf "%-6s %-12s %-10s %-10s\n" "$np" "$t" "$sp" "$ef"
-    echo "| $np | $t | $sp | $ef |" >> results.md
+    echo "| $np | $t | $sp | $ef |" >> results/results.md
 done
+
+echo
+echo "Table saved to results/results.md"
 
 if [ -x ./build/heat_cuda ]; then
     echo
-    echo "== CUDA =="
-    avg=$(./build/heat_cuda 1000 256 | grep Average | awk '{print $3}')
-    if [ "$avg" = "6.01949" ]; then status="OK"; else status="MISMATCH"; fi
-    echo "correctness N=256 K=1000: Average=$avg  $status"
-    t=$(./build/heat_cuda "$BENCH_K" "$BENCH_N" | grep Time | awk '{print $3}')
-    sp=$(awk -v b="$base" -v t="$t" 'BEGIN{printf "%.2f", b/t}')
-    echo "benchmark N=$BENCH_N K=$BENCH_K: time=$t s  speedup vs 1 process=$sp"
-    echo "| GPU (CUDA) | $t | $sp | - |" >> results.md
+    ./scripts/test_cuda.sh
+    echo
+    ./scripts/bench_cuda.sh
 else
     echo
-    echo "(no ./build/heat_cuda: CUDA not available, skipping GPU run)"
+    echo "(no ./build/heat_cuda: CUDA not available, skipping the GPU checks and benchmarks)"
 fi
-
-echo
-echo "Table saved to results.md"

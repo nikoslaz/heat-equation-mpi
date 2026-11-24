@@ -10,7 +10,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(MPI REQUIRED)
-add_executable(heat main.cpp heat_mpi.cpp)
+add_executable(heat src/mpi/main.cpp src/mpi/heat_mpi.cpp)
 target_compile_options(heat PRIVATE -Wall -Wextra)
 target_link_libraries(heat PRIVATE MPI::MPI_CXX)
 
@@ -25,20 +25,43 @@ add_custom_target(run
 )
 
 # Optional CUDA build: only when a CUDA compiler (nvcc) is found.
+#   heat_cuda      single GPU (kernels: naive, shared, temporal; double or float)
+#   heat_mpi_cuda  MPI + CUDA, one GPU per rank
 include(CheckLanguage)
 check_language(CUDA)
 if(CMAKE_CUDA_COMPILER)
-  enable_language(CUDA)
+  # Compile for the GPU in this machine unless an architecture is given (e.g. -DCMAKE_CUDA_ARCHITECTURES=75).
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
     set(CMAKE_CUDA_ARCHITECTURES native)
   endif()
-  add_executable(heat_cuda main.cpp heat_cuda.cu)
-  target_compile_definitions(heat_cuda PRIVATE HEAT_USE_CUDA)
-  target_compile_options(heat_cuda PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra>)
+  set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
+  enable_language(CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  set(CMAKE_CUDA_STANDARD 17)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
+  # Kernels; the programs that use them are plain C++.
+  add_library(heat_gpu STATIC src/cuda/heat_gpu.cu)
+  target_compile_options(heat_gpu PRIVATE -lineinfo)   # source lines in Nsight Compute profiles
+  target_link_libraries(heat_gpu PUBLIC CUDA::cudart)
+
+  add_executable(heat_cuda src/cuda/heat_cuda.cpp)
+  target_compile_options(heat_cuda PRIVATE -Wall -Wextra)
+  target_link_libraries(heat_cuda PRIVATE heat_gpu)
+
+  add_executable(heat_mpi_cuda src/cuda/heat_mpi_cuda.cpp)
+  target_compile_options(heat_mpi_cuda PRIVATE -Wall -Wextra)
+  target_link_libraries(heat_mpi_cuda PRIVATE heat_gpu MPI::MPI_CXX)
+
+  set(HEAT_CUDA_KERNEL naive CACHE STRING "Kernel for the run_cuda target: naive, shared or temporal")
   add_custom_target(run_cuda
-    COMMAND $<TARGET_FILE:heat_cuda> ${HEAT_K} ${HEAT_N}
+    COMMAND $<TARGET_FILE:heat_cuda> ${HEAT_K} ${HEAT_N} --kernel ${HEAT_CUDA_KERNEL}
     DEPENDS heat_cuda
+    USES_TERMINAL
+  )
+  add_custom_target(run_mpi_cuda
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${NP} $<TARGET_FILE:heat_mpi_cuda> ${HEAT_K} ${HEAT_N}
+    DEPENDS heat_mpi_cuda
     USES_TERMINAL
   )
 else()
