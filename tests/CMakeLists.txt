@@ -27,9 +27,13 @@ gtest_discover_tests(heat_unit_tests TEST_PREFIX "unit." PROPERTIES LABELS unit)
 # and prints FAILED (and exits with 1) on a mismatch; tests with EXPECT also check the printed average.
 # Labels: cpu, cuda (CUDA code, real GPU or emulator), gpu (needs a real GPU), mpi (runs under mpiexec).
 
+# Tests start up to 7 processes. Open MPI refuses more processes than cores unless told --oversubscribe
+# (other MPIs do not know the flag), so ask mpiexec which MPI it is.
 set(heat_mpiexec_flags ${MPIEXEC_PREFLAGS})
-if(MPI_CXX_LIBRARY_VERSION_STRING MATCHES "Open MPI")
-  list(APPEND heat_mpiexec_flags --oversubscribe)  # tests may start more processes than a CI machine has cores
+execute_process(COMMAND ${MPIEXEC_EXECUTABLE} --version OUTPUT_VARIABLE mpiexec_version ERROR_VARIABLE mpiexec_version
+                RESULT_VARIABLE mpiexec_result)
+if(mpiexec_version MATCHES "Open MPI|OpenRTE|prterun")
+  list(APPEND heat_mpiexec_flags --oversubscribe)
 endif()
 
 # heat_add_test(<name> TARGET <target> [NP <processes>] [EXPECT <average>] [LABELS <label>...] ARGS <arg>...)

@@ -72,7 +72,11 @@ Every program runs with `--verify`, which compares every grid point and the aver
 The CUDA tests cover each kernel in double and float precision, and `heat_mpi_cuda` with up to six
 processes sharing the GPU.
 """),
-    code("!ctest --preset cuda -j 2 | tail -n 12"),
+    code("""
+!ctest --preset cuda -j 2 > ctest.log 2>&1; grep -E "tests passed|tests failed|\\(Failed\\)|\\(Timeout\\)" ctest.log
+# If anything failed, run just those tests again and show their output:
+!grep -q "tests failed" ctest.log && ctest --preset cuda --rerun-failed --output-on-failure 2>&1 | tail -n 60
+"""),
     markdown("## Benchmark"),
     code("!scripts/bench_cuda.sh build/cuda"),
     markdown("## Charts"),

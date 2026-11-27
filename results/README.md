@@ -8,9 +8,9 @@ Raw measurements, one CSV file per machine. `scripts/make_charts.py` turns them 
 | `cpu-apple-m4.csv` | Apple M4 (4 performance + 6 efficiency cores), macOS 15, Open MPI 5.0 | `scripts/bench_mpi.sh` |
 | `gpu-tesla-t4.csv` | NVIDIA Tesla T4 on Google Colab, CUDA 13.0 | `scripts/bench_cuda.sh` |
 
-The T4 file currently holds only the naive kernel in double precision, measured with an earlier version of the
-program that had the same kernel. Running [the Colab notebook](../colab/heat_cuda.ipynb) replaces it with the full
-set: every kernel, both precisions, the temporal-blocking sweep and MPI + CUDA.
+The T4 file was written by [the Colab notebook](../colab/heat_cuda.ipynb): every kernel and precision for three
+grid sizes, the temporal kernel with 1 to 8 steps per launch, and `heat_mpi_cuda` with 1, 2 and 4 processes sharing
+the GPU.
 
 ## Columns
 

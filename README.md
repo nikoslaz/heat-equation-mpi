@@ -27,14 +27,15 @@ into a plate whose other edges are held at 0.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/performance-dark.png">
-  <img alt="Bar chart of grid-point updates per second: CPU with 1 process 2.5 billion, CPU with 4 MPI processes 4.9 billion (2.0 times faster), GPU with the naive kernel in double precision 14.0 billion (5.7 times faster)" src="docs/images/performance-light.png">
+  <img alt="Bar chart of grid-point updates per second on a 4096 by 4096 grid: CPU with 1 process 2.5 billion, with 4 MPI processes 4.9 billion; GPU kernels in double precision about 15 billion (6 times one CPU process), in float about 30 billion, and the temporal-blocking kernel in float 81 billion (32.9 times)" src="docs/images/performance-light.png">
 </picture>
 
-On a 4096 × 4096 grid, a Tesla T4 on a free Google Colab runtime runs the simplest kernel **5.7× faster than
-one process on an Apple M4**, and 2.8× faster than the best MPI run on it. Both are limited by memory
-bandwidth, not by arithmetic: the T4 kernel moves 224 GB/s, 70 % of the GPU's peak, and the CPU stops gaining
-at four processes, about 2× over one. The temporal-blocking and float kernels are built to get past that limit;
-the Colab notebook measures them. [Measurements and analysis](docs/performance.md).
+On a 4096 × 4096 grid, a Tesla T4 on a free Google Colab runtime runs the temporal-blocking kernel in single
+precision **32.9× faster than one process on an Apple M4** (16× faster than the best MPI run on it). The plain
+kernels on the GPU, and the CPU from four processes on, are limited by memory bandwidth: the simplest kernel uses
+76 % of the T4's bandwidth and still gets only 6.2×. Temporal blocking moves the grid through memory once per four
+time steps instead of every step, which takes the float kernel to twice the speed the bandwidth would otherwise
+allow. [Measurements and analysis](docs/performance.md), including why it does not help in double precision on a T4.
 
 ## Quick start
 

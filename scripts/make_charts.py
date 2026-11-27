@@ -90,6 +90,13 @@ def hbar_chart(theme, bars, series_names, title, subtitle, xlabel, path, referen
     ax.xaxis.grid(True, color=t["grid"], linewidth=1 * PX)
     ax.set_axisbelow(True)
 
+    # Make room for the longest bar label, whatever font this machine has.
+    fig.canvas.draw()
+    label_px = max(label.get_window_extent().width for label in ax.get_yticklabels())
+    fig_px = fig.get_figwidth() * fig.dpi
+    new_left = max(left, (label_px + 0.06 * fig_px) / fig_px)
+    ax.set_position((new_left, bottom, right - new_left, top - bottom))
+
     fig.canvas.draw()  # fix the layout before drawing the rounded bars in data coordinates
     bar_height = bar_in / row_in
     for i, (_, value, tip, s) in enumerate(bars):
