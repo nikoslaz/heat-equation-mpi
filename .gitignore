@@ -1,4 +1,13 @@
+# Build directories (CMake presets build into build/<preset>)
 build/
+
+# Program output
 grid.csv
+grid.png
+
+# Editors and Python
 .vscode/
 venv/
+.venv/
+__pycache__/
+*.pyc

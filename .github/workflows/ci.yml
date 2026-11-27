@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Open MPI's shared-memory single-copy mechanism needs ptrace permissions that CI machines often lack.
+  OMPI_MCA_btl_vader_single_copy_mechanism: none
+
+jobs:
+  test:
+    # Builds everything, with the CUDA programs on the CPU emulator, and runs all tests.
+    name: Test (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            cc: gcc
+            cxx: g++
+          - compiler: clang
+            cc: clang
+            cxx: clang++
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Open MPI
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libopenmpi-dev openmpi-bin
+      - name: Configure
+        run: cmake --preset ci
+      - name: Build
+        run: cmake --build --preset ci -j 4
+      - name: Test (unit, CPU, and CUDA code on the emulator)
+        run: ctest --preset ci -j 4
+
+  sanitizers:
+    name: AddressSanitizer + UndefinedBehaviorSanitizer
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Open MPI
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libopenmpi-dev openmpi-bin
+      - name: Configure
+        run: cmake --preset sanitize
+      - name: Build
+        run: cmake --build --preset sanitize -j 4
+      - name: Test
+        run: ctest --preset sanitize -j 4
+
+  cuda:
+    # The runners have no GPU: this compiles the CUDA code with nvcc and runs the tests that need no GPU.
+    name: CUDA ${{ matrix.cuda }} build
+    runs-on: ubuntu-24.04
+    container: nvidia/cuda:${{ matrix.cuda }}-devel-ubuntu24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda: ["12.9.1", "13.0.2"]
+    env:
+      OMPI_ALLOW_RUN_AS_ROOT: 1
+      OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+    steps:
+      - name: Install build tools
+        run: >
+          apt-get update && apt-get install -y --no-install-recommends
+          ca-certificates cmake g++ make libopenmpi-dev openmpi-bin
+      - uses: actions/checkout@v4
+      - name: Configure (for Turing, Ampere and Hopper GPUs)
+        run: cmake --preset cuda -DCMAKE_CUDA_ARCHITECTURES="75;80;90" -DHEAT_WERROR=ON
+      - name: Build
+        run: cmake --build --preset cuda -j 4
+      - name: Test what runs without a GPU
+        run: ctest --preset cuda -L "unit|cpu" -j 4
+
+  lint:
+    name: Format and static analysis
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends libopenmpi-dev
+          pipx install clang-format==19.1.7
+          pipx install clang-tidy==19.1.0
+      - name: clang-format
+        run: git ls-files '*.cpp' '*.hpp' '*.cu' '*.h' | xargs clang-format --dry-run --Werror
+      - name: Configure (writes compile_commands.json)
+        run: cmake --preset emulator
+      - name: clang-tidy
+        run: git ls-files 'src/*.cpp' 'tests/*.cpp' | xargs clang-tidy -p build/emulator --quiet

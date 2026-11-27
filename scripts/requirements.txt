@@ -1,0 +1,5 @@
+# For the figure scripts: plot_grid.py, make_charts.py, make_animation.py
+#   python3 -m venv .venv && .venv/bin/pip install -r scripts/requirements.txt
+matplotlib>=3.7
+numpy>=1.24
+pillow>=10

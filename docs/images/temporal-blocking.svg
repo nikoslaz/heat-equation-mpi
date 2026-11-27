@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 400" width="760" height="400" role="img" aria-labelledby="title desc">
+  <title id="title">Temporal blocking</title>
+  <desc id="desc">A GPU block loads a tile into shared memory and advances it S time steps there. After each step the
+  points next to the tile edge are no longer exact, so the exact region shrinks by one point per step and the block
+  writes back only the inner part. Neighbouring tiles overlap by 2S points, so their written parts meet exactly.</desc>
+  <style>
+    svg { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    svg { --bg: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781; --line: #c3c2b7;
+          --s0: #cde2fb; --s1: #9ec5f4; --s2: #6da7ec; --s3: #2a78d6; --on-s3: #ffffff; }
+    @media (prefers-color-scheme: dark) {
+      svg { --bg: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781; --line: #383835;
+            --s0: #0d366b; --s1: #184f95; --s2: #256abf; --s3: #3987e5; --on-s3: #ffffff; }
+    }
+    .bg { fill: var(--bg); }
+    .title { fill: var(--ink); font-size: 15px; font-weight: 600; }
+    .label { fill: var(--ink); font-size: 13px; }
+    .note { fill: var(--ink2); font-size: 12.5px; }
+    .muted { fill: var(--muted); font-size: 12px; }
+    .on-s3 { fill: var(--on-s3); font-size: 13px; }
+    .s0 { fill: var(--s0); } .s1 { fill: var(--s1); } .s2 { fill: var(--s2); } .s3 { fill: var(--s3); }
+    .bracket { fill: none; stroke: var(--ink2); stroke-width: 1.5; }
+  </style>
+  <rect class="bg" width="760" height="400" rx="12"/>
+
+  <!-- Left: one tile, S = 3 -->
+  <text class="title" x="32" y="40">One block, S = 3 steps in shared memory</text>
+  <rect class="s0" x="40" y="70" width="288" height="144" rx="3"/>
+  <rect class="s1" x="52" y="82" width="264" height="120" rx="3"/>
+  <rect class="s2" x="64" y="94" width="240" height="96" rx="3"/>
+  <rect class="s3" x="76" y="106" width="216" height="72" rx="3"/>
+  <text class="on-s3" x="184" y="147" text-anchor="middle">written back</text>
+
+  <rect class="s0" x="40" y="236" width="14" height="14" rx="3"/>
+  <text class="label" x="62" y="248">loaded from GPU memory: the whole tile</text>
+  <rect class="s1" x="40" y="258" width="14" height="14" rx="3"/>
+  <text class="label" x="62" y="270">still exact after 1 step</text>
+  <rect class="s2" x="40" y="280" width="14" height="14" rx="3"/>
+  <text class="label" x="62" y="292">after 2 steps</text>
+  <rect class="s3" x="40" y="302" width="14" height="14" rx="3"/>
+  <text class="label" x="62" y="314">after 3 steps: written back to GPU memory</text>
+  <text class="muted" x="40" y="342">Schematic. The real tile is 32 × 64 points, and S is 1 to 8;</text>
+  <text class="muted" x="40" y="360">the block writes back (32 − 2S) × (64 − 2S) points.</text>
+
+  <!-- Right: two neighbouring tiles along a row -->
+  <text class="title" x="420" y="40">Neighbouring tiles overlap by 2S</text>
+  <text class="label" x="420" y="88">block A</text>
+  <rect class="s0" x="420" y="96" width="180" height="22" rx="3"/>
+  <rect class="s3" x="447" y="96" width="126" height="22"/>
+  <text class="label" x="546" y="148">block B</text>
+  <rect class="s0" x="546" y="156" width="180" height="22" rx="3"/>
+  <rect class="s3" x="573" y="156" width="126" height="22"/>
+  <path class="bracket" d="M 546 192 L 546 200 L 600 200 L 600 192"/>
+  <text class="note" x="573" y="220" text-anchor="middle">2S points,</text>
+  <text class="note" x="573" y="237" text-anchor="middle">computed by both</text>
+  <text class="note" x="420" y="282">The written parts meet exactly, so every point is</text>
+  <text class="note" x="420" y="300">written by one block. The grid travels to and from</text>
+  <text class="note" x="420" y="318">GPU memory once per S steps instead of every step:</text>
+  <text class="note" x="420" y="336">S times less traffic, for some repeated arithmetic.</text>
+</svg>

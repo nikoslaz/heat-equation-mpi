@@ -1,0 +1,79 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 22, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Optimised build. The CUDA programs are included when nvcc is found.",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "debug",
+      "inherits": "release",
+      "displayName": "Debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "cuda",
+      "inherits": "release",
+      "displayName": "CUDA",
+      "description": "Release build that requires nvcc and builds the CUDA programs.",
+      "cacheVariables": { "HEAT_CUDA": "ON" }
+    },
+    {
+      "name": "emulator",
+      "inherits": "release",
+      "displayName": "CUDA on the CPU emulator",
+      "description": "Builds the CUDA programs against a CPU emulator of CUDA, so they run and test without a GPU.",
+      "cacheVariables": { "HEAT_CUDA": "EMULATOR" }
+    },
+    {
+      "name": "sanitize",
+      "inherits": "release",
+      "displayName": "Sanitizers",
+      "description": "Debug build with AddressSanitizer and UndefinedBehaviorSanitizer (CUDA code on the emulator).",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "HEAT_SANITIZE": "ON",
+        "HEAT_CUDA": "EMULATOR",
+        "HEAT_WERROR": "ON"
+      }
+    },
+    {
+      "name": "ci",
+      "inherits": "emulator",
+      "displayName": "CI",
+      "description": "What continuous integration builds: release, CUDA code on the emulator, warnings as errors.",
+      "cacheVariables": { "HEAT_WERROR": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "release", "configurePreset": "release" },
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "cuda", "configurePreset": "cuda" },
+    { "name": "emulator", "configurePreset": "emulator" },
+    { "name": "sanitize", "configurePreset": "sanitize" },
+    { "name": "ci", "configurePreset": "ci" }
+  ],
+  "testPresets": [
+    {
+      "name": "defaults",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    { "name": "release", "inherits": "defaults", "configurePreset": "release" },
+    { "name": "debug", "inherits": "defaults", "configurePreset": "debug" },
+    { "name": "cuda", "inherits": "defaults", "configurePreset": "cuda" },
+    { "name": "emulator", "inherits": "defaults", "configurePreset": "emulator" },
+    {
+      "name": "sanitize",
+      "inherits": "defaults",
+      "configurePreset": "sanitize",
+      "environment": { "ASAN_OPTIONS": "detect_leaks=0" }
+    },
+    { "name": "ci", "inherits": "defaults", "configurePreset": "ci" }
+  ]
+}

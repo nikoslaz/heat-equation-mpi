@@ -1,0 +1,83 @@
+# Performance
+
+All measurements are in [`results/`](../results) as CSV files and the charts are drawn from them by
+[`scripts/make_charts.py`](../scripts/make_charts.py). The benchmark problem is a 4096 × 4096 grid and 200 time
+steps; speed is given in GLUP/s, billions of grid-point updates per second.
+
+| | machine | software |
+|---|---|---|
+| CPU | Apple M4: 4 performance and 6 efficiency cores, 120 GB/s memory bandwidth (Apple's figure) | macOS 15, Apple Clang 17, Open MPI 5.0 |
+| GPU | NVIDIA Tesla T4 on Google Colab: 320 GB/s memory bandwidth | CUDA 13.0 |
+
+The CPU and the GPU are different machines, so the CPU-to-GPU ratios compare these two machines, not CPUs and
+GPUs in general.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/performance-dark.png">
+  <img alt="Bar chart of grid-point updates per second: CPU with 1 process 2.5 billion, CPU with 4 MPI processes 4.9 billion (2.0 times faster), GPU with the naive kernel in double precision 14.0 billion (5.7 times faster)" src="images/performance-light.png">
+</picture>
+
+## CPU: `heat` on an Apple M4
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/mpi-scaling-dark.png">
+  <img alt="Line chart of speedup against MPI processes: 1.6 with 2, 1.9 with 3, 2.0 with 4, then falling to 1.6 with 10, far below the ideal line" src="images/mpi-scaling-light.png">
+</picture>
+
+Best of five runs ([`results/cpu-apple-m4.csv`](../results/cpu-apple-m4.csv), `scripts/bench_mpi.sh`):
+
+| processes | time (s), overlapped exchange | time (s), blocking exchange | GLUP/s (best) | speedup |
+|---|---|---|---|---|
+| 1 | 1.444 | 1.368 | 2.45 | 1.00 |
+| 2 | 0.889 | 0.858 | 3.91 | 1.60 |
+| 3 | 0.723 | 0.726 | 4.64 | 1.89 |
+| 4 | **0.679** | 0.690 | **4.94** | **2.01** |
+| 6 | 0.705 | 0.724 | 4.76 | 1.94 |
+| 8 | 0.775 | 0.793 | 4.33 | 1.77 |
+| 10 | 0.841 | 0.859 | 3.99 | 1.63 |
+
+Speedups are relative to the fastest one-process run. With one process the two exchange modes run the same code,
+so their difference (1.444 s against 1.368 s) shows the run-to-run noise on this laptop, about 5 %.
+
+- **Memory bandwidth sets the limit.** At its best, 4.94 GLUP/s, the program moves at least 16 bytes per update
+  (one value read, one written): 79 GB/s, about two thirds of the M4's 120 GB/s. Adding processes adds arithmetic,
+  not bandwidth, so the speedup flattens at about 2×.
+- **Past four processes it gets slower.** The M4 has four performance cores. Further processes run on the slower
+  efficiency cores, and since every process waits for its neighbours each step, the slowest one sets the pace.
+- **Overlapping the exchange makes no measurable difference here.** On one machine MPI messages are memory copies
+  of a single 32 KB row, which take far less time than computing a strip. The overlap matters when messages cross
+  a network; the code is the same either way.
+
+## GPU: `heat_cuda` on a Tesla T4
+
+So far measured with the naive kernel in double precision
+([`results/gpu-tesla-t4.csv`](../results/gpu-tesla-t4.csv)):
+
+| N | K | time (s) | GLUP/s | effective bandwidth |
+|---|---|---|---|---|
+| 4096 | 200 | 0.240 | 14.0 | 224 GB/s (70 % of peak) |
+| 8192 | 200 | 0.894 | 15.0 | 240 GB/s (75 %) |
+| 16384 | 100 | 1.773 | 15.1 | 242 GB/s (76 %) |
+
+Effective bandwidth is `GLUP/s × 16 bytes`: the traffic of reading and writing each value once per step.
+
+- **The GPU is 5.7× faster than one M4 process, and 2.8× faster than the best MPI run**, for the same reason the
+  CPU stops scaling: the T4 has more than twice the M4's memory bandwidth, and the kernel uses 70–76 % of it.
+- **The naive kernel is close to its ceiling.** A kernel that reads and writes the grid once per step can reach at
+  most 320 / 16 = 20 GLUP/s in double precision on a T4; this one reaches 15.
+- **Going faster means moving fewer bytes.** `float` halves the bytes per value, which raises that ceiling to
+  40 GLUP/s. The temporal kernel moves the grid once per S steps instead of every step, so it is not bound by the
+  ceiling at all, at the cost of recomputing the overlap between tiles. Its numbers, and the shared-memory kernel's,
+  are not in this table yet: they come from running [the Colab notebook](../colab/heat_cuda.ipynb), which
+  benchmarks every kernel, precision and value of S, and writes the CSV file the charts are drawn from.
+
+## Reproducing
+
+```bash
+scripts/bench_mpi.sh build/release   # CPU, writes results/cpu-<machine>.csv
+scripts/bench_cuda.sh build/cuda     # GPU, writes results/gpu-<device>.csv
+python3 scripts/make_charts.py       # redraws the charts in docs/images
+```
+
+For stable CPU numbers, close other applications and let the machine cool down after builds: the scripts report
+the best of several runs, but a laptop that is already hot runs slower.

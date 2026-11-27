@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" width="760" height="420" role="img" aria-labelledby="title desc">
+  <title id="title">Row decomposition with ghost rows</title>
+  <desc id="desc">The N by N grid is split into horizontal strips, one per MPI process. Each process stores its strip with
+  one extra ghost row above and below. Every time step, each process sends its first row to the process above
+  and its last row to the process below, where they land in the ghost rows.</desc>
+  <style>
+    svg { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    svg { --bg: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781; --line: #c3c2b7;
+          --strip-a: #cde2fb; --strip-b: #9ec5f4; --hot: #eb6834; --cold: #e1e0d9; --ghost: #f0efec; }
+    @media (prefers-color-scheme: dark) {
+      svg { --bg: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781; --line: #383835;
+            --strip-a: #184f95; --strip-b: #256abf; --hot: #d95926; --cold: #383835; --ghost: #2c2c2a; }
+    }
+    .bg { fill: var(--bg); }
+    .title { fill: var(--ink); font-size: 15px; font-weight: 600; }
+    .label { fill: var(--ink); font-size: 13px; }
+    .note { fill: var(--ink2); font-size: 12.5px; }
+    .muted { fill: var(--muted); font-size: 12px; }
+    .strip-a { fill: var(--strip-a); }
+    .strip-b { fill: var(--strip-b); }
+    .hot { fill: var(--hot); }
+    .cold { fill: var(--cold); }
+    .rowline { stroke: var(--bg); stroke-width: 2; }
+    .ghost-text { fill: var(--muted); font-size: 10px; }
+    .ghost { fill: var(--ghost); stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 3; }
+    .arrow { fill: none; stroke: var(--ink2); stroke-width: 1.5; }
+    .head { fill: var(--ink2); }
+  </style>
+  <defs>
+    <marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="head" d="M 0 0 L 10 5 L 0 10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="760" height="420" rx="12"/>
+
+  <!-- Left: the whole grid split into strips -->
+  <text class="title" x="32" y="40">The grid, split into row strips</text>
+  <rect class="strip-a" x="40" y="70" width="240" height="78"/>
+  <rect class="strip-b" x="40" y="150" width="240" height="78"/>
+  <rect class="strip-a" x="40" y="230" width="240" height="78"/>
+  <rect class="hot" x="40" y="66" width="240" height="6"/>
+  <text class="label" x="160" y="114" text-anchor="middle">process 0</text>
+  <text class="label" x="160" y="194" text-anchor="middle">process 1</text>
+  <text class="label" x="160" y="274" text-anchor="middle">process 2</text>
+  <text class="muted" x="40" y="334">Top edge held at 100, the other edges at 0.</text>
+  <text class="muted" x="40" y="352">N rows over P processes: the first N mod P</text>
+  <text class="muted" x="40" y="370">processes get one row more.</text>
+
+  <!-- Right: the strips in memory, with ghost rows -->
+  <text class="title" x="352" y="40">In memory: each strip plus two ghost rows</text>
+
+  <!-- process 0: 4 rows, the first is the hot boundary; ghost row below -->
+  <rect class="hot" x="430" y="70" width="220" height="12"/>
+  <rect class="strip-a" x="430" y="82" width="220" height="36"/>
+  <line class="rowline" x1="430" y1="94" x2="650" y2="94"/>
+  <line class="rowline" x1="430" y1="106" x2="650" y2="106"/>
+  <rect class="ghost" x="430" y="122" width="220" height="12"/>
+  <text class="ghost-text" x="540" y="132" text-anchor="middle">ghost row</text>
+  <text class="label" x="662" y="100">process 0</text>
+
+  <!-- process 1: ghost row, 4 rows, ghost row -->
+  <rect class="ghost" x="430" y="168" width="220" height="12"/>
+  <text class="ghost-text" x="540" y="178" text-anchor="middle">ghost row</text>
+  <rect class="strip-b" x="430" y="184" width="220" height="48"/>
+  <line class="rowline" x1="430" y1="196" x2="650" y2="196"/>
+  <line class="rowline" x1="430" y1="208" x2="650" y2="208"/>
+  <line class="rowline" x1="430" y1="220" x2="650" y2="220"/>
+  <rect class="ghost" x="430" y="236" width="220" height="12"/>
+  <text class="ghost-text" x="540" y="246" text-anchor="middle">ghost row</text>
+  <text class="label" x="662" y="212">process 1</text>
+
+  <!-- process 2: ghost row, 4 rows, the last is the cold boundary -->
+  <rect class="ghost" x="430" y="282" width="220" height="12"/>
+  <text class="ghost-text" x="540" y="292" text-anchor="middle">ghost row</text>
+  <rect class="strip-a" x="430" y="298" width="220" height="36"/>
+  <rect class="cold" x="430" y="334" width="220" height="12"/>
+  <line class="rowline" x1="430" y1="310" x2="650" y2="310"/>
+  <line class="rowline" x1="430" y1="322" x2="650" y2="322"/>
+  <text class="label" x="662" y="324">process 2</text>
+
+  <!-- last row goes down (right side), first row goes up (left side) -->
+  <path class="arrow" d="M 652 112 C 700 112, 700 174, 655 174" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M 652 226 C 700 226, 700 288, 655 288" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M 428 190 C 382 190, 382 128, 425 128" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M 428 304 C 382 304, 382 242, 425 242" marker-end="url(#arrowhead)"/>
+
+  <text class="note" x="352" y="380">Every step, each process sends its first row up and its last row down;</text>
+  <text class="note" x="352" y="398">they arrive in the neighbours' ghost rows (MPI_Isend / MPI_Irecv).</text>
+</svg>

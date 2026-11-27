@@ -1,0 +1,4 @@
+device,peak_gbs,program,kernel,tsteps,precision,processes,overlap,N,K,seconds,glups,effective_gbs
+"Tesla T4",320.064,heat_cuda,naive,,double,1,,4096,200,0.2400,13.98,223.7
+"Tesla T4",320.064,heat_cuda,naive,,double,1,,8192,200,0.8937,15.02,240.3
+"Tesla T4",320.064,heat_cuda,naive,,double,1,,16384,100,1.7734,15.14,242.2

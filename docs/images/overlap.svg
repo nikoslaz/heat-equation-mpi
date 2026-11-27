@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 330" width="760" height="330" role="img" aria-labelledby="title desc">
+  <title id="title">Overlapping the halo exchange with computation</title>
+  <desc id="desc">One time step of heat_mpi_cuda. With overlap, the inner rows are computed on one CUDA stream while the
+  edge rows are copied to the host, exchanged with MPI and copied back on a second stream; the two edge rows are then
+  updated. Without overlap the exchange comes first and all rows are computed after it, so the step takes longer.</desc>
+  <style>
+    svg { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    svg { --bg: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781; --line: #c3c2b7;
+          --kernel: #2a78d6; --mpi: #eb6834; --copy: #c3c2b7; --on-dark: #ffffff; --on-light: #0b0b0b; }
+    @media (prefers-color-scheme: dark) {
+      svg { --bg: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781; --line: #383835;
+            --kernel: #3987e5; --mpi: #d95926; --copy: #52514e; --on-dark: #ffffff; --on-light: #f0efec; }
+    }
+    .bg { fill: var(--bg); }
+    .title { fill: var(--ink); font-size: 15px; font-weight: 600; }
+    .label { fill: var(--ink2); font-size: 12.5px; }
+    .muted { fill: var(--muted); font-size: 12px; }
+    .kernel { fill: var(--kernel); } .mpi { fill: var(--mpi); } .copy { fill: var(--copy); }
+    .in-dark { fill: var(--on-dark); font-size: 12px; }
+    .in-light { fill: var(--on-light); font-size: 12px; }
+    .end { stroke: var(--ink2); stroke-width: 1.5; }
+  </style>
+  <rect class="bg" width="760" height="330" rx="12"/>
+  <text class="title" x="32" y="40">One time step of heat_mpi_cuda (schematic)</text>
+
+  <!-- Overlapped (default) -->
+  <text class="title" x="32" y="82" style="font-size:13px">overlapped (default)</text>
+  <text class="label" x="32" y="112">compute stream</text>
+  <rect class="kernel" x="170" y="96" width="300" height="24" rx="4"/>
+  <text class="in-dark" x="320" y="112" text-anchor="middle">inner rows</text>
+  <text class="label" x="32" y="146">transfer stream</text>
+  <rect class="copy" x="170" y="130" width="40" height="24" rx="4"/>
+  <rect class="mpi" x="212" y="130" width="108" height="24" rx="4"/>
+  <text class="in-dark" x="266" y="146" text-anchor="middle">MPI exchange</text>
+  <rect class="copy" x="322" y="130" width="40" height="24" rx="4"/>
+  <rect class="kernel" x="364" y="130" width="34" height="24" rx="4"/>
+  <text class="muted" x="381" y="172" text-anchor="middle">edge rows</text>
+  <line class="end" x1="474" y1="90" x2="474" y2="160"/>
+  <text class="label" x="480" y="146">step done</text>
+
+  <!-- Not overlapped -->
+  <text class="title" x="32" y="196" style="font-size:13px">--no-overlap</text>
+  <text class="label" x="32" y="226">one stream</text>
+  <rect class="copy" x="170" y="210" width="40" height="24" rx="4"/>
+  <rect class="mpi" x="212" y="210" width="108" height="24" rx="4"/>
+  <text class="in-dark" x="266" y="226" text-anchor="middle">MPI exchange</text>
+  <rect class="copy" x="322" y="210" width="40" height="24" rx="4"/>
+  <rect class="kernel" x="364" y="210" width="334" height="24" rx="4"/>
+  <text class="in-dark" x="531" y="226" text-anchor="middle">all rows</text>
+  <line class="end" x1="702" y1="204" x2="702" y2="240"/>
+
+  <!-- Legend -->
+  <rect class="kernel" x="170" y="270" width="14" height="14" rx="3"/>
+  <text class="label" x="190" y="282">GPU kernel</text>
+  <rect class="mpi" x="290" y="270" width="14" height="14" rx="3"/>
+  <text class="label" x="310" y="282">MPI message</text>
+  <rect class="copy" x="420" y="270" width="14" height="14" rx="3"/>
+  <text class="label" x="440" y="282">copy between GPU and host memory</text>
+  <text class="muted" x="170" y="310">Lengths are illustrative. On one machine the exchange is cheap; across a network it is not.</text>
+</svg>

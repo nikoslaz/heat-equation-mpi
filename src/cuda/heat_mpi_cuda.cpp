@@ -1,205 +1,252 @@
-// Multi-GPU 2D heat solver: MPI between processes, CUDA inside each process.
-// Same row decomposition as heat_mpi.cpp, but each rank keeps its strip (plus two ghost rows)
-// in GPU memory. The kernels are in heat_gpu.cu.
-#include "cuda_check.hpp"
-#include "heat_gpu.hpp"
+// heat_mpi_cuda: the 2D heat equation on several GPUs. Same row decomposition as heat, but each rank keeps
+// its strip and ghost rows in the memory of its own GPU. The kernels are in kernels.cu.
+#include <algorithm>
+#include <cstddef>
+#include <ostream>
+#include <string>
+#include <vector>
 
 #include <mpi.h>
 
-#include <algorithm>
-#include <fstream>
-#include <iostream>
-#include <string>
-#include <utility>
-#include <vector>
+#include "core/cli.hpp"
+#include "core/report.hpp"
+#include "cuda/cuda_utils.hpp"
+#include "cuda/kernels.hpp"
+#include "mpi/mpi_utils.hpp"
 
-int main(int argc, char** argv) {
-    MPI_Init(&argc, &argv);
+namespace {
 
-    int rank = 0, size = 1;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
+using heat::cuda::DeviceBuffer;
+using heat::cuda::PinnedBuffer;
+using heat::cuda::Stream;
 
-    // ---- Arguments ----
-    int K = 0, N = 0;
-    bool overlap = true;     // compute interior rows while the halo exchange runs
-    bool cudaAware = false;  // pass GPU pointers straight to MPI (needs a CUDA-aware MPI build)
-    bool argsOk = argc >= 3;
-    try {
-        if (argsOk) {
-            K = std::stoi(argv[1]);
-            N = std::stoi(argv[2]);
-        }
-    } catch (...) {
-        argsOk = false;
-    }
-    for (int a = 3; argsOk && a < argc; a++) {
-        const std::string arg = argv[a];
-        if (arg == "--no-overlap") overlap = false;
-        else if (arg == "--cuda-aware") cudaAware = true;
-        else argsOk = false;
-    }
-    if (!argsOk || K < 0 || N < 3) {
-        if (rank == 0) std::cout << "Usage: heat_mpi_cuda K N [--no-overlap] [--cuda-aware]\n";
-        MPI_Finalize();
-        return 1;
-    }
-    if (N % size != 0) {
-        if (rank == 0)
-            std::cerr << "Error: N (" << N << ") must be divisible by the number of processes (" << size << ")\n";
-        MPI_Finalize();
-        return 1;
-    }
+constexpr int kTagUp = 0;    // a row travelling to the rank above
+constexpr int kTagDown = 1;  // a row travelling to the rank below
 
-    // ---- One GPU per rank on each node (ranks share GPUs round-robin if there are fewer) ----
-    MPI_Comm nodeComm;
-    MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, rank, MPI_INFO_NULL, &nodeComm);
+struct Settings {
+    bool overlap = true;     // compute the inner rows while the ghost rows are exchanged
+    bool cudaAware = false;  // pass GPU memory straight to MPI (needs an MPI built with CUDA support)
+};
+
+// Gives each rank on a node its own GPU (round-robin if there are more ranks than GPUs) and returns the
+// number of GPUs on the node.
+int select_gpu(MPI_Comm comm) {
+    MPI_Comm node = MPI_COMM_NULL;
+    CHECK_MPI(MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node));
     int nodeRank = 0;
-    MPI_Comm_rank(nodeComm, &nodeRank);
-    MPI_Comm_free(&nodeComm);
+    CHECK_MPI(MPI_Comm_rank(node, &nodeRank));
+    CHECK_MPI(MPI_Comm_free(&node));
 
-    int deviceCount = 0;
-    CUDA_CHECK(cudaGetDeviceCount(&deviceCount));
-    CUDA_CHECK(cudaSetDevice(nodeRank % deviceCount));
+    int count = 0;
+    CHECK_CUDA(cudaGetDeviceCount(&count));
+    CHECK_CUDA(cudaSetDevice(nodeRank % count));
+    return count;
+}
 
-    // ---- Local strip: rows 1..localRows, ghost rows 0 and localRows+1 ----
-    const int localRows = N / size;
-    const int up = (rank == 0) ? MPI_PROC_NULL : rank - 1;
-    const int down = (rank == size - 1) ? MPI_PROC_NULL : rank + 1;
-    const size_t count = (size_t)(localRows + 2) * N;
-    const size_t bytes = count * sizeof(double);
-    const size_t rowBytes = (size_t)N * sizeof(double);
-    constexpr double alpha = 0.2;
+// Exchanges a strip's edge rows with the neighbouring ranks. The strip lives in GPU memory as (rows + 2) x N
+// values: ghost row, the strip's rows, ghost row.
+class HaloExchange {
+public:
+    HaloExchange(int N, int rows, heat::mpi::Neighbours nb, bool cudaAware, MPI_Comm comm)
+        : N_(N),
+          rows_(rows),
+          nb_(nb),
+          cudaAware_(cudaAware),
+          comm_(comm),
+          sendUp_(N),
+          sendDown_(N),
+          recvUp_(N),
+          recvDown_(N) {}
 
-    std::vector<double> h(count, 0.0);
-    if (rank == 0)
-        for (int j = 0; j < N; j++) h[(size_t)N + j] = 100.0;   // global row 0 is local row 1 of rank 0
-
-    double *dU = nullptr, *dUNew = nullptr;
-    CUDA_CHECK(cudaMalloc(&dU, bytes));
-    CUDA_CHECK(cudaMalloc(&dUNew, bytes));
-
-    // Pinned host buffers for the host-staged halo exchange (pinned memory allows async copies).
-    double *sendUp = nullptr, *sendDown = nullptr, *recvUp = nullptr, *recvDown = nullptr;
-    CUDA_CHECK(cudaMallocHost(&sendUp, rowBytes));
-    CUDA_CHECK(cudaMallocHost(&sendDown, rowBytes));
-    CUDA_CHECK(cudaMallocHost(&recvUp, rowBytes));
-    CUDA_CHECK(cudaMallocHost(&recvDown, rowBytes));
-
-    cudaStream_t compute, comm;
-    CUDA_CHECK(cudaStreamCreateWithFlags(&compute, cudaStreamNonBlocking));
-    CUDA_CHECK(cudaStreamCreateWithFlags(&comm, cudaStreamNonBlocking));
-
-    // Rows this rank updates (local indices, inclusive), as in heat_mpi.cpp.
-    const int iStart = (rank == 0) ? 2 : 1;
-    const int iEnd = (rank == size - 1) ? localRows - 1 : localRows;
-    // Rows 1 and localRows read a ghost row; the rows between them do not.
-    const int innerBegin = std::max(iStart, 2);
-    const int innerEnd = std::min(iEnd, localRows - 1) + 1;   // exclusive
-    std::vector<int> edgeRows;
-    for (int r : {1, localRows})
-        if (r >= iStart && r <= iEnd && std::find(edgeRows.begin(), edgeRows.end(), r) == edgeRows.end())
-            edgeRows.push_back(r);
-
-    // Fill ghost rows 0 and localRows+1 of d with the neighbours' edge rows.
-    // Device work is queued on the comm stream.
-    auto exchange = [&](double* d) {
-        double* firstRow = d + N;
-        double* lastRow = d + (size_t)localRows * N;
-        double* ghostTop = d;
-        double* ghostBottom = d + (size_t)(localRows + 1) * N;
-
-        if (cudaAware) {
-            MPI_Sendrecv(firstRow, N, MPI_DOUBLE, up, 0, ghostBottom, N, MPI_DOUBLE, down, 0,
-                         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            MPI_Sendrecv(lastRow, N, MPI_DOUBLE, down, 1, ghostTop, N, MPI_DOUBLE, up, 1,
-                         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    // Fills the ghost rows of `grid` with the neighbours' edge rows. The copies into GPU memory are queued on
+    // `stream`, so work queued on `stream` afterwards sees the new ghost rows.
+    void exchange(double* grid, cudaStream_t stream) {
+        double* first = row(grid, 1);
+        double* last = row(grid, rows_);
+        double* ghostTop = row(grid, 0);
+        double* ghostBottom = row(grid, rows_ + 1);
+        if (cudaAware_) {
+            send_receive(first, ghostBottom, last, ghostTop);
             return;
         }
+        // Host-staged: GPU -> pinned host buffer -> MPI -> pinned host buffer -> GPU.
+        copy_row(nb_.up, sendUp_.data(), first, cudaMemcpyDeviceToHost, stream);
+        copy_row(nb_.down, sendDown_.data(), last, cudaMemcpyDeviceToHost, stream);
+        CHECK_CUDA(cudaStreamSynchronize(stream));
+        send_receive(sendUp_.data(), recvDown_.data(), sendDown_.data(), recvUp_.data());
+        copy_row(nb_.up, ghostTop, recvUp_.data(), cudaMemcpyHostToDevice, stream);
+        copy_row(nb_.down, ghostBottom, recvDown_.data(), cudaMemcpyHostToDevice, stream);
+    }
 
-        // Host-staged: GPU -> pinned buffer -> MPI -> pinned buffer -> GPU.
-        if (up != MPI_PROC_NULL)
-            CUDA_CHECK(cudaMemcpyAsync(sendUp, firstRow, rowBytes, cudaMemcpyDeviceToHost, comm));
-        if (down != MPI_PROC_NULL)
-            CUDA_CHECK(cudaMemcpyAsync(sendDown, lastRow, rowBytes, cudaMemcpyDeviceToHost, comm));
-        CUDA_CHECK(cudaStreamSynchronize(comm));
+private:
+    [[nodiscard]] double* row(double* grid, int r) const { return grid + static_cast<std::size_t>(r) * N_; }
 
-        MPI_Sendrecv(sendUp, N, MPI_DOUBLE, up, 0, recvDown, N, MPI_DOUBLE, down, 0,
-                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        MPI_Sendrecv(sendDown, N, MPI_DOUBLE, down, 1, recvUp, N, MPI_DOUBLE, up, 1,
-                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    // Copies one row, unless there is no neighbour on that side.
+    void copy_row(int neighbour, double* dst, const double* src, cudaMemcpyKind kind, cudaStream_t stream) const {
+        if (neighbour != MPI_PROC_NULL) {
+            CHECK_CUDA(cudaMemcpyAsync(dst, src, static_cast<std::size_t>(N_) * sizeof(double), kind, stream));
+        }
+    }
 
-        if (up != MPI_PROC_NULL)
-            CUDA_CHECK(cudaMemcpyAsync(ghostTop, recvUp, rowBytes, cudaMemcpyHostToDevice, comm));
-        if (down != MPI_PROC_NULL)
-            CUDA_CHECK(cudaMemcpyAsync(ghostBottom, recvDown, rowBytes, cudaMemcpyHostToDevice, comm));
-    };
+    // Sends `firstRow` up and `lastRow` down, and receives the neighbours' rows into `fromBelow` and
+    // `fromAbove`. At the top and bottom of the grid the neighbour is MPI_PROC_NULL and nothing moves.
+    void send_receive(const double* firstRow, double* fromBelow, const double* lastRow, double* fromAbove) const {
+        CHECK_MPI(MPI_Sendrecv(firstRow, N_, MPI_DOUBLE, nb_.up, kTagUp, fromBelow, N_, MPI_DOUBLE, nb_.down,
+                               kTagUp, comm_, MPI_STATUS_IGNORE));
+        CHECK_MPI(MPI_Sendrecv(lastRow, N_, MPI_DOUBLE, nb_.down, kTagDown, fromAbove, N_, MPI_DOUBLE, nb_.up,
+                               kTagDown, comm_, MPI_STATUS_IGNORE));
+    }
 
-    auto step = [&]() {
-        if (overlap) {
-            // The interior kernel runs on its own stream while the edge rows travel through MPI;
-            // the two edge rows are updated once their ghost rows have arrived.
-            launch_step_rows(dU, dUNew, N, innerBegin, innerEnd, alpha, StepKernel::Naive, compute);
-            exchange(dU);
-            for (int r : edgeRows) launch_step_rows(dU, dUNew, N, r, r + 1, alpha, StepKernel::Naive, comm);
+    int N_;
+    int rows_;
+    heat::mpi::Neighbours nb_;
+    bool cudaAware_;
+    MPI_Comm comm_;
+    PinnedBuffer<double> sendUp_;
+    PinnedBuffer<double> sendDown_;
+    PinnedBuffer<double> recvUp_;
+    PinnedBuffer<double> recvDown_;
+};
+
+// This rank's strip in GPU memory, advanced one time step at a time.
+class GpuStrip {
+public:
+    GpuStrip(int N, const heat::Strip& strip, heat::mpi::Neighbours nb, const Settings& settings, MPI_Comm comm)
+        : N_(N),
+          strip_(strip),
+          settings_(settings),
+          all_(heat::updated_rows(strip, N)),
+          split_(heat::split_rows(strip, N)),
+          initial_(heat::initial_strip(strip, N)),
+          u_(initial_.size()),
+          uNew_(initial_.size()),
+          halo_(N, strip.rows, nb, settings.cudaAware, comm) {
+        reset();
+    }
+
+    // Back to the initial condition.
+    void reset() {
+        u_.upload(initial_);
+        uNew_.upload(initial_);
+    }
+
+    void step() {
+        using heat::gpu::launch_step;
+        using heat::gpu::StepKernel;
+        if (settings_.overlap) {
+            // The inner rows need no ghost rows: compute them on one stream while the edge rows travel through
+            // MPI, then update the edge rows on the other stream once their ghost rows have arrived.
+            launch_step(u_.data(), uNew_.data(), N_, split_.inner, heat::kAlpha, StepKernel::Naive,
+                        compute_.get());
+            halo_.exchange(u_.data(), transfer_.get());
+            for (const int r : split_.edges) {
+                launch_step(u_.data(), uNew_.data(), N_, {r, r + 1}, heat::kAlpha, StepKernel::Naive,
+                            transfer_.get());
+            }
         } else {
-            exchange(dU);
-            launch_step_rows(dU, dUNew, N, iStart, iEnd + 1, alpha, StepKernel::Naive, comm);
+            halo_.exchange(u_.data(), transfer_.get());
+            launch_step(u_.data(), uNew_.data(), N_, all_, heat::kAlpha, StepKernel::Naive, transfer_.get());
         }
-        CUDA_CHECK(cudaStreamSynchronize(compute));
-        CUDA_CHECK(cudaStreamSynchronize(comm));
-        std::swap(dU, dUNew);
-    };
-
-    // Untimed warm-up step (loads the kernels onto the GPU), then reset to the initial condition.
-    CUDA_CHECK(cudaMemcpy(dU, h.data(), bytes, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(dUNew, h.data(), bytes, cudaMemcpyHostToDevice));
-    step();
-    CUDA_CHECK(cudaMemcpy(dU, h.data(), bytes, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(dUNew, h.data(), bytes, cudaMemcpyHostToDevice));
-
-    MPI_Barrier(MPI_COMM_WORLD);
-    const double t0 = MPI_Wtime();
-    for (int s = 0; s < K; s++) step();
-    const double localTime = MPI_Wtime() - t0;
-
-    // ---- Results ----
-    const double localSum = gpu_sum(dU + N, (size_t)localRows * N);
-    double total = 0.0, maxTime = 0.0;
-    MPI_Reduce(&localSum, &total, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&localTime, &maxTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-
-    if (N <= 1024) {
-        std::vector<double> mine((size_t)localRows * N);
-        CUDA_CHECK(cudaMemcpy(mine.data(), dU + N, mine.size() * sizeof(double), cudaMemcpyDeviceToHost));
-        std::vector<double> full;
-        if (rank == 0) full.resize((size_t)N * N);
-        MPI_Gather(mine.data(), localRows * N, MPI_DOUBLE, full.data(), localRows * N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        if (rank == 0) {
-            std::ofstream f("grid.csv");
-            for (int i = 0; i < N; i++)
-                for (int j = 0; j < N; j++)
-                    f << full[(size_t)i * N + j] << (j + 1 < N ? "," : "\n");
-        }
+        compute_.synchronize();
+        transfer_.synchronize();
+        swap(u_, uNew_);
     }
 
-    if (rank == 0) {
-        std::cout << "Ranks = " << size << ", GPUs on rank 0's node = " << deviceCount
-                  << ", overlap = " << (overlap ? "on" : "off")
-                  << ", halo transport = " << (cudaAware ? "CUDA-aware MPI" : "host-staged") << "\n";
-        std::cout << "Average = " << total / ((double)N * N) << "\n";
-        std::cout << "Time = " << maxTime << " s\n";
+    // The strip's rows, without the ghost rows, copied to the host.
+    [[nodiscard]] std::vector<double> rows() const { return u_.download(N_, values()); }
+
+    // Sum of the strip's values, computed on the GPU.
+    [[nodiscard]] double sum() const { return heat::gpu::sum(u_.data() + N_, values()); }
+
+private:
+    [[nodiscard]] std::size_t values() const { return static_cast<std::size_t>(strip_.rows) * N_; }
+
+    int N_;
+    heat::Strip strip_;
+    Settings settings_;
+    heat::RowRange all_;
+    heat::RowSplit split_;
+    std::vector<double> initial_;
+    DeviceBuffer<double> u_;
+    DeviceBuffer<double> uNew_;
+    Stream compute_;
+    Stream transfer_;
+    HaloExchange halo_;
+};
+
+std::string describe_setup(int processes, int gpus, const Settings& s) {
+    return std::to_string(processes) + (processes == 1 ? " process, " : " processes, ") + std::to_string(gpus) +
+           (gpus == 1 ? " GPU" : " GPUs") + " per node, " +
+           (s.overlap ? "halo exchange overlapped with computation" : "blocking halo exchange") + ", " +
+           (s.cudaAware ? "CUDA-aware MPI" : "host-staged transfers");
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    const heat::mpi::Session mpi(argc, argv);
+
+    heat::Problem problem;
+    heat::OutputOptions output;
+    Settings settings;
+    bool blocking = false;
+    heat::ArgParser args("heat_mpi_cuda",
+                         "2D heat equation on several GPUs: row strips over MPI processes, one GPU per process.");
+    args.add_flag("--no-overlap",
+                  "exchange ghost rows first, then compute every row (default: compute the inner rows while the "
+                  "ghost rows are exchanged)",
+                  &blocking);
+    args.add_flag("--cuda-aware",
+                  "pass GPU memory straight to MPI instead of copying it through host memory (needs an MPI built "
+                  "with CUDA support)",
+                  &settings.cudaAware);
+    heat::add_output_options(args, output);
+    switch (args.parse(argc, argv, problem, mpi.out(), mpi.err())) {
+        case heat::ArgParser::Result::Help: return 0;
+        case heat::ArgParser::Result::Error: return 1;
+        case heat::ArgParser::Result::Ok: break;
+    }
+    const int N = problem.N;
+    if (N < mpi.size()) {
+        mpi.err() << "heat_mpi_cuda: N (" << N << ") must be at least the number of processes (" << mpi.size()
+                  << ")\n";
+        return 1;
+    }
+    settings.overlap = !blocking;
+
+    const int gpus = select_gpu(MPI_COMM_WORLD);
+    const heat::Strip strip = heat::strip_of(mpi.rank(), mpi.size(), N);
+    GpuStrip gpu(N, strip, heat::mpi::neighbours(mpi.rank(), mpi.size()), settings, MPI_COMM_WORLD);
+
+    gpu.step();  // untimed warm-up: the first launches also load the kernels onto the GPU
+    gpu.reset();
+
+    CHECK_MPI(MPI_Barrier(MPI_COMM_WORLD));
+    const double start = MPI_Wtime();
+    for (int step = 0; step < problem.K; step++) gpu.step();
+    const double localSeconds = MPI_Wtime() - start;
+
+    const double average = heat::mpi::sum_on_root(gpu.sum(), MPI_COMM_WORLD) / (static_cast<double>(N) * N);
+    const double seconds = heat::mpi::max_on_root(localSeconds, MPI_COMM_WORLD);
+
+    const std::string csv = output.csv_path(N);
+    std::vector<double> grid;
+    if (output.verify || !csv.empty()) {
+        const std::vector<double> rows = gpu.rows();
+        grid = heat::mpi::gather_grid(rows.data(), strip, N, MPI_COMM_WORLD);
     }
 
-    CUDA_CHECK(cudaStreamDestroy(compute));
-    CUDA_CHECK(cudaStreamDestroy(comm));
-    CUDA_CHECK(cudaFreeHost(sendUp));
-    CUDA_CHECK(cudaFreeHost(sendDown));
-    CUDA_CHECK(cudaFreeHost(recvUp));
-    CUDA_CHECK(cudaFreeHost(recvDown));
-    CUDA_CHECK(cudaFree(dU));
-    CUDA_CHECK(cudaFree(dUNew));
-
-    MPI_Finalize();
-    return 0;
+    int status = 0;
+    if (mpi.rank() == 0) {
+        std::ostream& out = mpi.out();
+        heat::print_field(out, "Program", "heat_mpi_cuda (MPI + CUDA)");
+        heat::print_field(out, "Grid", heat::describe(problem));
+        heat::print_field(out, "Setup", describe_setup(mpi.size(), gpus, settings));
+        heat::print_field(out, "Device", heat::cuda::current_device().name + " (rank 0)");
+        heat::print_timing(out, problem, average, seconds);
+        if (output.verify && !heat::verify_against_serial(out, problem, grid, average)) status = 1;
+        if (!csv.empty() && !heat::write_csv(out, csv, grid, N)) status = 1;
+    }
+    CHECK_MPI(MPI_Bcast(&status, 1, MPI_INT, 0, MPI_COMM_WORLD));
+    return status;
 }

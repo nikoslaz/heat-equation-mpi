@@ -1,0 +1,15 @@
+machine,program,processes,overlap,N,K,seconds,glups
+"Apple M4",heat,1,on,4096,200,1.44412,2.324
+"Apple M4",heat,2,on,4096,200,0.889087,3.774
+"Apple M4",heat,3,on,4096,200,0.72335,4.639
+"Apple M4",heat,4,on,4096,200,0.679366,4.939
+"Apple M4",heat,6,on,4096,200,0.705085,4.759
+"Apple M4",heat,8,on,4096,200,0.774673,4.331
+"Apple M4",heat,10,on,4096,200,0.841036,3.99
+"Apple M4",heat,1,off,4096,200,1.36824,2.452
+"Apple M4",heat,2,off,4096,200,0.857819,3.912
+"Apple M4",heat,3,off,4096,200,0.726456,4.619
+"Apple M4",heat,4,off,4096,200,0.690398,4.86
+"Apple M4",heat,6,off,4096,200,0.72396,4.635
+"Apple M4",heat,8,off,4096,200,0.793389,4.229
+"Apple M4",heat,10,off,4096,200,0.858653,3.908

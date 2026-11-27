@@ -1,0 +1,23 @@
+# Code style, checked in CI: clang-format --dry-run --Werror (clang-format 19, pip install clang-format==19.1.7)
+BasedOnStyle: Google
+IndentWidth: 4
+AccessModifierOffset: -4
+ColumnLimit: 115
+DerivePointerAlignment: false
+PointerAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<(mpi|cuda_runtime)\.h>$'  # libraries
+    Priority: 3
+  - Regex: '^<gtest/'
+    Priority: 3
+  - Regex: '^<.*\.h>$'                  # C system headers
+    Priority: 1
+  - Regex: '^<'                         # C++ standard library
+    Priority: 2
+  - Regex: '.*'                         # this project
+    Priority: 4
